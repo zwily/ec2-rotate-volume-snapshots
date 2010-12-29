@@ -1,6 +1,6 @@
 = ec2-rotate-volume-snapshots
 
-Description goes here.
+Provides a simple way to rotate ec2 snapshots in a father/grandfather/etc setup.
 
 == Contributing to ec2-rotate-volume-snapshots
  

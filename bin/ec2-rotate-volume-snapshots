@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'right_aws'
+require 'optparse'
+
+opts = {
+  :aws_access_key => ENV["AWS_ACCESS_KEY_ID"],
+  :aws_secret_access_key => ENV["AWS_SECRET_ACCESS_KEY"],
+  :aws_region => 'us-east-1',
+  :pattern => nil,
+  :dry_run => false
+}
+
+time_periods = {
+  :hourly  => { :seconds => 60 * 60, :format => '%Y-%m-%d-%H', :keep => 0, :keeping => {} },
+  :daily   => { :seconds => 24 * 60 * 60, :format => '%Y-%m-%d', :keep => 0, :keeping => {} },
+  :weekly  => { :seconds => 7 * 24 * 60 * 60, :format => '%Y-%W', :keep => 0, :keeping => {} },
+  :monthly => { :seconds => 30 * 7 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
+  :yearly  => { :seconds => 12 * 30 * 7 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
+}
+
+OptionParser.new do |o|
+  o.on("--aws-access-key ACCESS_KEY", "AWS Access Key") do |v|
+    opts[:aws_access_key] = v
+  end
+
+  o.on("--aws-secret-access-key SECRET_KEY", "AWS Secret Access Key") do |v|
+    opts[:aws_secret_access_key] = v
+  end
+
+  o.on("--aws-region REGION", "AWS Region") do |v|
+    opts[:aws_region] = v
+  end
+
+  o.on("--pattern STRING", "Snapshots without this string in the description will be ignored") do |v|
+    opts[:pattern] = v
+  end
+
+  time_periods.keys.sort { |a, b| time_periods[a][:seconds] <=> time_periods[b][:seconds] }.each do |period|
+    o.on("--keep-#{period} NUMBER", Integer, "Number of #{period} snapshots to keep") do |v|
+      time_periods[period][:keep] = v
+    end
+  end
+
+  o.on("--dry-run", "Shows what would happen without doing anything") do |v|
+    opts[:dry_run] = true
+  end
+end.parse!
+
+if opts[:aws_access_key].nil? || opts[:aws_secret_access_key].nil?
+  puts "You must specify your Amazon credentials via --aws-access-key and --aws-secret_access-key"
+  exit 1
+end
+
+if ARGV.empty?
+  puts "You must provide at least one volume id with snapshots to rotate"
+  exit 1
+end
+volume_ids = ARGV
+
+time_periods.freeze
+
+ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
+all_snapshots = ec2.describe_snapshots
+
+volume_ids.each do |volume_id|
+  if volume_id !~ /^vol-/
+    # sanity check
+    puts "Invalid volume id: #{volume_id}"
+    exit 1
+  end
+  
+  periods = time_periods.dup
+  
+  snapshots_to_keep = {}
+  snapshots = all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
+  
+  snapshots.each do |snapshot|
+    time = Time.parse(snapshot[:aws_started_at])
+    snapshot_id = snapshot[:aws_id]
+    description = snapshot[:aws_description]
+    keep_reason = nil
+    
+    if opts[:pattern] && description !~ /#{opts[:pattern]}/
+      puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Skipping snapshot with description #{description}"
+      next
+    end
+    
+    periods.keys.sort { |a, b| periods[a][:seconds] <=> periods[b][:seconds] }.each do |period|
+      period_info = periods[period]
+      keep = period_info[:keep]
+      keeping = period_info[:keeping]
+      
+      time_string = time.strftime period_info[:format]
+      if Time.now - time < keep * period_info[:seconds]
+        if !keeping.key?(time_string) && keeping.length < keep
+          keep_reason = period
+          keeping[time_string] = snapshot
+        end
+        break
+      end
+    end
+    
+    if !keep_reason.nil?
+      puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Keeping for #{keep_reason}"
+    else
+      puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Deleting"
+      ec2.delete_snapshot(snapshot_id) unless opts[:dry_run]
+    end
+  end
+end
