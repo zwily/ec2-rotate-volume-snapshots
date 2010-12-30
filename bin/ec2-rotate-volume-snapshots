@@ -59,8 +59,6 @@ if ARGV.empty?
 end
 volume_ids = ARGV
 
-time_periods.freeze
-
 ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
 all_snapshots = ec2.describe_snapshots
 
@@ -71,7 +69,8 @@ volume_ids.each do |volume_id|
     exit 1
   end
   
-  periods = time_periods.dup
+  # poor man's way to get a deep copy of our time_periods definition hash
+  periods = Marshal.load(Marshal.dump(time_periods))
   
   snapshots_to_keep = {}
   snapshots = all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
