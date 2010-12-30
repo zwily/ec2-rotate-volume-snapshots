@@ -5,11 +5,11 @@
 
 Gem::Specification.new do |s|
   s.name = %q{ec2-rotate-volume-snapshots}
-  s.version = "0.1.0"
+  s.version = "0.1.1"
 
   s.required_rubygems_version = Gem::Requirement.new(">= 0") if s.respond_to? :required_rubygems_version=
   s.authors = ["Zach Wily"]
-  s.date = %q{2010-12-29}
+  s.date = %q{2010-12-30}
   s.default_executable = %q{ec2-rotate-volume-snapshots}
   s.description = %q{Provides a simple way to rotate EC2 snapshots with configurable retention periods.}
   s.email = %q{zach@zwily.com}
@@ -27,6 +27,7 @@ Gem::Specification.new do |s|
     "Rakefile",
     "VERSION",
     "bin/ec2-rotate-volume-snapshots",
+    "ec2-rotate-volume-snapshots.gemspec",
     "lib/.empty",
     "test/helper.rb",
     "test/test_ec2-rotate-volume-snapshots.rb"
