@@ -43,6 +43,10 @@ OptionParser.new do |o|
     end
   end
 
+  o.on("--keep-last", "Keep the most recent snapshot, regardless of time-based policy") do |v|
+    opts[:keep_last] = true
+  end
+
   o.on("--dry-run", "Shows what would happen without doing anything") do |v|
     opts[:dry_run] = true
   end
@@ -99,6 +103,10 @@ volume_ids.each do |volume_id|
         end
         break
       end
+    end
+    
+    if keep_reason.nil? && snapshot == snapshots.last && opts[:keep_last]
+      keep_reason = 'last snapshot'
     end
     
     if !keep_reason.nil?
