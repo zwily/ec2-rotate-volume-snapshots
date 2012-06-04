@@ -64,7 +64,7 @@ end
 volume_ids = ARGV
 
 ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
-all_snapshots = ec2.describe_snapshots
+all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
 
 volume_ids.each do |volume_id|
   if volume_id !~ /^vol-/
