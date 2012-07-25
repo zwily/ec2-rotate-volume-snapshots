@@ -16,8 +16,8 @@ time_periods = {
   :hourly  => { :seconds => 60 * 60, :format => '%Y-%m-%d-%H', :keep => 0, :keeping => {} },
   :daily   => { :seconds => 24 * 60 * 60, :format => '%Y-%m-%d', :keep => 0, :keeping => {} },
   :weekly  => { :seconds => 7 * 24 * 60 * 60, :format => '%Y-%W', :keep => 0, :keeping => {} },
-  :monthly => { :seconds => 30 * 7 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
-  :yearly  => { :seconds => 12 * 30 * 7 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
+  :monthly => { :seconds => 30 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
+  :yearly  => { :seconds => 12 * 30 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
 }
 
 OptionParser.new do |o|
