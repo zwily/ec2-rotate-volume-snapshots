@@ -9,7 +9,8 @@ opts = {
   :aws_secret_access_key => ENV["AWS_SECRET_ACCESS_KEY"],
   :aws_region => 'us-east-1',
   :pattern => nil,
-  :dry_run => false
+  :dry_run => false,
+  :backoff_limit => 0
 }
 
 time_periods = {
@@ -35,6 +36,10 @@ OptionParser.new do |o|
 
   o.on("--pattern STRING", "Snapshots without this string in the description will be ignored") do |v|
     opts[:pattern] = v
+  end
+
+  o.on("--backoff-limit LIMIT", "Backoff and retry when hitting EC2 Request Limit exceptions no more than this many times. Default is 0 (no limit)") do |v|
+    opts[:backoff_limit] = v
   end
 
   time_periods.keys.sort { |a, b| time_periods[a][:seconds] <=> time_periods[b][:seconds] }.each do |period|
@@ -63,6 +68,12 @@ if ARGV.empty?
 end
 volume_ids = ARGV
 
+if opts[:backoff_limit] < 0
+  puts "A negative backoff limit doesn't make much sense."
+  exit 1
+end
+
+backoffed = 0
 ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
 all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
 
@@ -116,18 +127,30 @@ volume_ids.each do |volume_id|
       puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Keeping for #{keep_reason}"
     else
       puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Deleting"
-      ec2.delete_snapshot(snapshot_id) unless opts[:dry_run]
-      
-      # Hardcore rigorous testing has shown that sleeping 5 seconds after 50 deletes
-      # keeps the RequestLimitExceeded error away in 2 out of 2 trials, while sleeping 
-      # 1 second was insufficient. 
-      # There doesn't seem to be any published numbers for what the limit actually is,
-      # and there does seem to be plenty of implications that it depends on your account,
-      # the AWS service, and possibly phases of the moon and AWS's internal activities.
-      deletes = deletes + 1
-      if deletes > 50
-        deletes = 0
-        sleep 5
+      begin
+        ec2.delete_snapshot(snapshot_id) unless opts[:dry_run]
+      rescue RightAws::AwsError => e
+        # If we have been sending too many EC2 requests, then let's backoff a random
+        # amount of time and try again later.
+        if e.errors.kind_of? Array
+          if e.errors[0][0] == 'RequestLimitExceeded'
+            backoffed = backoffed + 1
+
+            if opts[:backoff_limit] > 0 && opts[backoff_limit] < backoffed
+              puts "Too many backoff attempts. Sorry it didn't work out."
+              exit 2
+            end
+
+            naptime = rand(60) * backoffed
+            puts "Backing off for #{naptime} seconds..."
+            sleep naptime
+            retry
+          else
+            raise e
+          end
+        else
+          raise e
+        end
       end
     end
   end
