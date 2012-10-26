@@ -21,6 +21,18 @@ $time_periods = {
   :monthly => { :seconds => 30 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
   :yearly  => { :seconds => 12 * 30 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
 }
+def backoff()
+  $backoffed = $backoffed + 1
+
+  if $opts[:backoff_limit] > 0 && $opts[backoff_limit] < $backoffed
+    puts "Too many backoff attempts. Sorry it didn't work out."
+    exit 2
+  end
+
+  naptime = rand(60) * $backoffed
+  puts "Backing off for #{naptime} seconds..."
+  sleep naptime
+end
 
 def rotate_em(snapshots)
   # poor man's way to get a deep copy of our time_periods definition hash
@@ -67,16 +79,7 @@ def rotate_em(snapshots)
         # amount of time and try again later.
         if e.errors.kind_of? Array
           if e.errors[0][0] == 'RequestLimitExceeded'
-            backoffed = backoffed + 1
-
-            if $opts[:backoff_limit] > 0 && $opts[backoff_limit] < backoffed
-              puts "Too many backoff attempts. Sorry it didn't work out."
-              exit 2
-            end
-
-            naptime = rand(60) * backoffed
-            puts "Backing off for #{naptime} seconds..."
-            sleep naptime
+            backoff()
             retry
           else
             raise e
@@ -181,12 +184,44 @@ if $opts[:backoff_limit] < 0
   exit 1
 end
 
-backoffed = 0
-ec2 = RightAws::Ec2.new($opts[:aws_access_key], $opts[:aws_secret_access_key], :region => $opts[:aws_region])
+$backoffed = 0
+begin
+  ec2 = RightAws::Ec2.new($opts[:aws_access_key], $opts[:aws_secret_access_key], :region => $opts[:aws_region])
+rescue RightAws::AwsError => e
+  # If we have been sending too many EC2 requests, then let's backoff a random
+  # amount of time and try again later.
+  if e.errors.kind_of? Array
+    if e.errors[0][0] == 'RequestLimitExceeded'
+      backoff()
+      retry
+    else
+      raise e
+    end
+  else
+    raise e
+  end
+end
+
+
 all_snapshots = []
 if $opts[:by_tags]
   $opts[:by_tags].each do |tag, value|
-    these_snapshots = ec2.describe_tags(:filters => {'resource-type'=>"snapshot", 'key'=>tag, 'value'=>value}).map {|t| t[:resource_id]}
+    begin
+      these_snapshots = ec2.describe_tags(:filters => {'resource-type'=>"snapshot", 'key'=>tag, 'value'=>value}).map {|t| t[:resource_id]}
+    rescue RightAws::AwsError => e
+      # If we have been sending too many EC2 requests, then let's backoff a random
+      # amount of time and try again later.
+      if e.errors.kind_of? Array
+        if e.errors[0][0] == 'RequestLimitExceeded'
+          backoff()
+          retry
+        else
+          raise e
+        end
+      else
+        raise e
+      end
+    end
     if these_snapshots.length == 0
       puts "(tag,value)=(#{tag},#{value}) found no snapshots; nothing to rotate!"
       exit 0
@@ -203,9 +238,41 @@ if $opts[:by_tags]
     all_snapshots = remaining_snapshots
   end
 
-  rotate_em(ec2.describe_snapshots(all_snapshots).sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] })
+  begin
+    rotate_these = ec2.describe_snapshots(all_snapshots).sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
+  rescue RightAws::AwsError => e
+    # If we have been sending too many EC2 requests, then let's backoff a random
+    # amount of time and try again later.
+    if e.errors.kind_of? Array
+      if e.errors[0][0] == 'RequestLimitExceeded'
+        backoff()
+        retry
+      else
+        raise e
+      end
+    else
+      raise e
+    end
+  end
+
+  rotate_em(rotate_these)
 else
-  all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
+  begin
+    all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
+  rescue RightAws::AwsError => e
+    # If we have been sending too many EC2 requests, then let's backoff a random
+    # amount of time and try again later.
+    if e.errors.kind_of? Array
+      if e.errors[0][0] == 'RequestLimitExceeded'
+        backoff()
+        retry
+      else
+        raise e
+      end
+    else
+      raise e
+    end
+  end
 
   volume_ids.each do |volume_id|
     rotate_em(all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] })
