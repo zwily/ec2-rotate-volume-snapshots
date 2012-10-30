@@ -4,94 +4,39 @@ require 'rubygems'
 require 'right_aws'
 require 'optparse'
 
-opts = {
+$opts = {
   :aws_access_key => ENV["AWS_ACCESS_KEY_ID"],
   :aws_secret_access_key => ENV["AWS_SECRET_ACCESS_KEY"],
   :aws_region => 'us-east-1',
   :pattern => nil,
+  :by_tags => nil,
   :dry_run => false,
   :backoff_limit => 0
 }
 
-time_periods = {
+$time_periods = {
   :hourly  => { :seconds => 60 * 60, :format => '%Y-%m-%d-%H', :keep => 0, :keeping => {} },
   :daily   => { :seconds => 24 * 60 * 60, :format => '%Y-%m-%d', :keep => 0, :keeping => {} },
   :weekly  => { :seconds => 7 * 24 * 60 * 60, :format => '%Y-%W', :keep => 0, :keeping => {} },
   :monthly => { :seconds => 30 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
   :yearly  => { :seconds => 12 * 30 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
 }
+def backoff()
+  $backoffed = $backoffed + 1
 
-OptionParser.new do |o|
-  o.on("--aws-access-key ACCESS_KEY", "AWS Access Key") do |v|
-    opts[:aws_access_key] = v
+  if $opts[:backoff_limit] > 0 && $opts[backoff_limit] < $backoffed
+    puts "Too many backoff attempts. Sorry it didn't work out."
+    exit 2
   end
 
-  o.on("--aws-secret-access-key SECRET_KEY", "AWS Secret Access Key") do |v|
-    opts[:aws_secret_access_key] = v
-  end
-
-  o.on("--aws-region REGION", "AWS Region") do |v|
-    opts[:aws_region] = v
-  end
-
-  o.on("--pattern STRING", "Snapshots without this string in the description will be ignored") do |v|
-    opts[:pattern] = v
-  end
-
-  o.on("--backoff-limit LIMIT", "Backoff and retry when hitting EC2 Request Limit exceptions no more than this many times. Default is 0 (no limit)") do |v|
-    opts[:backoff_limit] = v
-  end
-
-  time_periods.keys.sort { |a, b| time_periods[a][:seconds] <=> time_periods[b][:seconds] }.each do |period|
-    o.on("--keep-#{period} NUMBER", Integer, "Number of #{period} snapshots to keep") do |v|
-      time_periods[period][:keep] = v
-    end
-  end
-
-  o.on("--keep-last", "Keep the most recent snapshot, regardless of time-based policy") do |v|
-    opts[:keep_last] = true
-  end
-
-  o.on("--dry-run", "Shows what would happen without doing anything") do |v|
-    opts[:dry_run] = true
-  end
-end.parse!
-
-if opts[:aws_access_key].nil? || opts[:aws_secret_access_key].nil?
-  puts "You must specify your Amazon credentials via --aws-access-key and --aws-secret_access-key"
-  exit 1
+  naptime = rand(60) * $backoffed
+  puts "Backing off for #{naptime} seconds..."
+  sleep naptime
 end
 
-if ARGV.empty?
-  puts "You must provide at least one volume id with snapshots to rotate"
-  exit 1
-end
-volume_ids = ARGV
-
-if opts[:backoff_limit] < 0
-  puts "A negative backoff limit doesn't make much sense."
-  exit 1
-end
-
-backoffed = 0
-ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
-all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
-
-volume_ids.each do |volume_id|
-  if volume_id !~ /^vol-/
-    # sanity check
-    puts "Invalid volume id: #{volume_id}"
-    exit 1
-  end
-  
-  # keep track of how many deletes we've done per throttle
-  deletes = 0
-  
+def rotate_em(snapshots)
   # poor man's way to get a deep copy of our time_periods definition hash
-  periods = Marshal.load(Marshal.dump(time_periods))
-  
-  snapshots_to_keep = {}
-  snapshots = all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
+  periods = Marshal.load(Marshal.dump($time_periods))
   
   snapshots.each do |snapshot|
     time = Time.parse(snapshot[:aws_started_at])
@@ -99,7 +44,7 @@ volume_ids.each do |volume_id|
     description = snapshot[:aws_description]
     keep_reason = nil
     
-    if opts[:pattern] && description !~ /#{opts[:pattern]}/
+    if $opts[:pattern] && description !~ /#{$opts[:pattern]}/
       puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Skipping snapshot with description #{description}"
       next
     end
@@ -119,7 +64,7 @@ volume_ids.each do |volume_id|
       end
     end
     
-    if keep_reason.nil? && snapshot == snapshots.last && opts[:keep_last]
+    if keep_reason.nil? && snapshot == snapshots.last && $opts[:keep_last]
       keep_reason = 'last snapshot'
     end
     
@@ -128,22 +73,13 @@ volume_ids.each do |volume_id|
     else
       puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Deleting"
       begin
-        ec2.delete_snapshot(snapshot_id) unless opts[:dry_run]
+        ec2.delete_snapshot(snapshot_id) unless $opts[:dry_run]
       rescue RightAws::AwsError => e
         # If we have been sending too many EC2 requests, then let's backoff a random
         # amount of time and try again later.
         if e.errors.kind_of? Array
           if e.errors[0][0] == 'RequestLimitExceeded'
-            backoffed = backoffed + 1
-
-            if opts[:backoff_limit] > 0 && opts[backoff_limit] < backoffed
-              puts "Too many backoff attempts. Sorry it didn't work out."
-              exit 2
-            end
-
-            naptime = rand(60) * backoffed
-            puts "Backing off for #{naptime} seconds..."
-            sleep naptime
+            backoff()
             retry
           else
             raise e
@@ -153,5 +89,192 @@ volume_ids.each do |volume_id|
         end
       end
     end
+  end
+end
+
+
+def split_tag(hash,v)
+    v.split(',').each do |pair|
+        tag, value = pair.split('=',2)
+        if value.nil?
+          puts "invalid tag=value format"
+          exit 1
+        end
+        hash[tag] = value
+    end
+end
+
+OptionParser.new do |o|
+  script_name = File.basename($0)
+  o.banner = "Usage: #{script_name} [options] <volume_ids>\nUsage: #{script_name} --by-tags <tag=value,...> [other options]"
+  o.separator ""
+
+  o.on("--aws-access-key ACCESS_KEY", "AWS Access Key") do |v|
+    $opts[:aws_access_key] = v
+  end
+
+  o.on("--aws-secret-access-key SECRET_KEY", "AWS Secret Access Key") do |v|
+    $opts[:aws_secret_access_key] = v
+  end
+
+  o.on("--aws-region REGION", "AWS Region") do |v|
+    $opts[:aws_region] = v
+  end
+
+  o.on("--pattern STRING", "Snapshots without this string in the description will be ignored") do |v|
+    $opts[:pattern] = v
+  end
+
+  o.on("--by-tags TAG=VALUE,TAG=VALUE", "Instead of rotating specific volumes, rotate over all the snapshots having the intersection of all given TAG=VALUE pairs.") do |v|
+    $opts[:by_tags] = {}
+    split_tag($opts[:by_tags],v)
+  end
+
+  o.on("--backoff-limit LIMIT", "Backoff and retry when hitting EC2 Request Limit exceptions no more than this many times. Default is 0 (no limit)") do |v|
+    $opts[:backoff_limit] = v
+  end
+
+  $time_periods.keys.sort { |a, b| $time_periods[a][:seconds] <=> $time_periods[b][:seconds] }.each do |period|
+    o.on("--keep-#{period} NUMBER", Integer, "Number of #{period} snapshots to keep") do |v|
+      $time_periods[period][:keep] = v
+    end
+  end
+
+  o.on("--keep-last", "Keep the most recent snapshot, regardless of time-based policy") do |v|
+    $opts[:keep_last] = true
+  end
+
+  o.on("--dry-run", "Shows what would happen without doing anything") do |v|
+    $opts[:dry_run] = true
+  end
+end.parse!
+
+if $opts[:aws_access_key].nil? || $opts[:aws_secret_access_key].nil?
+  puts "You must specify your Amazon credentials via --aws-access-key and --aws-secret_access-key"
+  exit 1
+end
+
+if ARGV.empty? and $opts[:by_tags].nil?
+  puts "You must provide at least one volume id when not rotating by tags"
+  exit 1
+end
+
+if $opts[:by_tags].nil?
+  volume_ids = ARGV
+
+  volume_ids.each do |volume_id|
+    if volume_id !~ /^vol-/
+      # sanity check
+      puts "Invalid volume id: #{volume_id}"
+      exit 1
+    end
+  end
+else
+  if !ARGV.empty?
+    puts "Ignoring supplied volume_ids because we're rotating by tags."
+  end
+  if $opts[:by_tags].length == 0
+    puts "Rotating by tags but no tags specified? Refusing to rotate all snapshots!"
+    exit 1
+  end
+end
+
+if $opts[:backoff_limit] < 0
+  puts "A negative backoff limit doesn't make much sense."
+  exit 1
+end
+
+$backoffed = 0
+begin
+  ec2 = RightAws::Ec2.new($opts[:aws_access_key], $opts[:aws_secret_access_key], :region => $opts[:aws_region])
+rescue RightAws::AwsError => e
+  # If we have been sending too many EC2 requests, then let's backoff a random
+  # amount of time and try again later.
+  if e.errors.kind_of? Array
+    if e.errors[0][0] == 'RequestLimitExceeded'
+      backoff()
+      retry
+    else
+      raise e
+    end
+  else
+    raise e
+  end
+end
+
+
+all_snapshots = []
+if $opts[:by_tags]
+  $opts[:by_tags].each do |tag, value|
+    begin
+      these_snapshots = ec2.describe_tags(:filters => {'resource-type'=>"snapshot", 'key'=>tag, 'value'=>value}).map {|t| t[:resource_id]}
+    rescue RightAws::AwsError => e
+      # If we have been sending too many EC2 requests, then let's backoff a random
+      # amount of time and try again later.
+      if e.errors.kind_of? Array
+        if e.errors[0][0] == 'RequestLimitExceeded'
+          backoff()
+          retry
+        else
+          raise e
+        end
+      else
+        raise e
+      end
+    end
+    if these_snapshots.length == 0
+      puts "(tag,value)=(#{tag},#{value}) found no snapshots; nothing to rotate!"
+      exit 0
+    end
+    if all_snapshots.length == 0
+      remaining_snapshots = these_snapshots
+    else
+      remaining_snapshots = all_snapshots & these_snapshots
+    end
+    if remaining_snapshots.length == 0
+      puts "No remaining snapshots after applying (tag,value)=(#{tag},#{value}) filter; nothing to rotate!"
+      exit 0
+    end
+    all_snapshots = remaining_snapshots
+  end
+
+  begin
+    rotate_these = ec2.describe_snapshots(all_snapshots).sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
+  rescue RightAws::AwsError => e
+    # If we have been sending too many EC2 requests, then let's backoff a random
+    # amount of time and try again later.
+    if e.errors.kind_of? Array
+      if e.errors[0][0] == 'RequestLimitExceeded'
+        backoff()
+        retry
+      else
+        raise e
+      end
+    else
+      raise e
+    end
+  end
+
+  rotate_em(rotate_these)
+else
+  begin
+    all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
+  rescue RightAws::AwsError => e
+    # If we have been sending too many EC2 requests, then let's backoff a random
+    # amount of time and try again later.
+    if e.errors.kind_of? Array
+      if e.errors[0][0] == 'RequestLimitExceeded'
+        backoff()
+        retry
+      else
+        raise e
+      end
+    else
+      raise e
+    end
+  end
+
+  volume_ids.each do |volume_id|
+    rotate_em(all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] })
   end
 end
