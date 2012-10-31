@@ -1,6 +1,6 @@
 source "http://rubygems.org"
 
-gem "right_aws", ">= 2.0.0"
+gem "aws-sdk"
 
 # Add dependencies to develop your gem here.
 # Include everything needed to run rake, tests, features, etc.
