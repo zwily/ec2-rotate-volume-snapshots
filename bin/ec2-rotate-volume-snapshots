@@ -73,7 +73,7 @@ def rotate_em(snapshots)
     else
       puts "  #{time.strftime '%Y-%m-%d %H:%M:%S'} #{snapshot_id} Deleting"
       begin
-        ec2.delete_snapshot(snapshot_id) unless $opts[:dry_run]
+        $ec2.delete_snapshot(snapshot_id) unless $opts[:dry_run]
       rescue RightAws::AwsError => e
         # If we have been sending too many EC2 requests, then let's backoff a random
         # amount of time and try again later.
@@ -186,7 +186,7 @@ end
 
 $backoffed = 0
 begin
-  ec2 = RightAws::Ec2.new($opts[:aws_access_key], $opts[:aws_secret_access_key], :region => $opts[:aws_region])
+  $ec2 = RightAws::Ec2.new($opts[:aws_access_key], $opts[:aws_secret_access_key], :region => $opts[:aws_region])
 rescue RightAws::AwsError => e
   # If we have been sending too many EC2 requests, then let's backoff a random
   # amount of time and try again later.
@@ -207,7 +207,7 @@ all_snapshots = []
 if $opts[:by_tags]
   $opts[:by_tags].each do |tag, value|
     begin
-      these_snapshots = ec2.describe_tags(:filters => {'resource-type'=>"snapshot", 'key'=>tag, 'value'=>value}).map {|t| t[:resource_id]}
+      these_snapshots = $ec2.describe_tags(:filters => {'resource-type'=>"snapshot", 'key'=>tag, 'value'=>value}).map {|t| t[:resource_id]}
     rescue RightAws::AwsError => e
       # If we have been sending too many EC2 requests, then let's backoff a random
       # amount of time and try again later.
@@ -239,7 +239,7 @@ if $opts[:by_tags]
   end
 
   begin
-    rotate_these = ec2.describe_snapshots(all_snapshots).sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
+    rotate_these = $ec2.describe_snapshots(all_snapshots).sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
   rescue RightAws::AwsError => e
     # If we have been sending too many EC2 requests, then let's backoff a random
     # amount of time and try again later.
@@ -258,7 +258,7 @@ if $opts[:by_tags]
   rotate_em(rotate_these)
 else
   begin
-    all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
+    all_snapshots = $ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
   rescue RightAws::AwsError => e
     # If we have been sending too many EC2 requests, then let's backoff a random
     # amount of time and try again later.
